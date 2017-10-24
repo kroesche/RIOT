@@ -1,0 +1,5 @@
+export CPU_ARCH = cortex-m3
+
+include $(RIOTMAKE)/arch/cortexm.inc.mk
+
+export INCLUDES += -I$(RIOTCPU)/stellaris_common/include/vendor

@@ -1,0 +1,9 @@
+# define the CPU used by the EK-LM3S6965 board
+export CPU = lm3s6965
+export CPU_MODEL = LM3S6965
+
+# ports dont work right on Mac because of custom PID, not recognized
+# by FTDI driver
+
+# use openocd
+include $(RIOTMAKE)/tools/openocd.inc.mk

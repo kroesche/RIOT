@@ -1,0 +1,62 @@
+@startuml
+
+title RIOT bare metal startup
+
+hide footbox
+skinparam BoxPadding 4
+skinparam monochrome true
+skinparam Shadowing false
+
+box "CPU"
+participant "cortexm_common/\nvectors_cortexm.c" as vec0
+participant "cortexm_common/\ncortexm_init.c" as init0
+participant "mycpu/\ncpu.c" as cpu
+participant "mycpu/\nperiph/\nspi.c" as spi
+
+end box
+
+box "BOARD"
+participant "myboard/\nboard.c" as brd
+
+end box
+
+box "DRIVERS"
+participant "periph_common/\ninit.c" as perinit
+
+end box
+
+[->vec0: reset_handler()
+  activate vec0
+  vec0->vec0: pre_startup()
+  note left: weak hook
+  note over vec0: memory\ninits
+  vec0->vec0: post_startup()
+  note left: weak hook
+  vec0->brd: board_init()
+    activate brd
+    note over brd: board\ninits
+    brd->cpu: cpu_init()
+    activate cpu
+    cpu->init0: cortexm_init()
+      note left: nvic inits
+      activate init0
+      init0->cpu
+      deactivate init0
+    note over cpu: mycpu\ninits
+    cpu->perinit: periph_init()
+      activate perinit
+      perinit->spi: spi_init()
+        activate spi
+        note over spi: spi hw\ninits
+        spi->perinit
+        deactivate spi
+      perinit->cpu
+      deactivate perinit
+    cpu->brd
+    deactivate cpu
+  brd->vec0
+  deactivate brd
+[<-vec0: kernel_init()
+
+@enduml
+

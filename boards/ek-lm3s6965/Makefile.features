@@ -1,0 +1,10 @@
+# Put defined MCU peripherals here (in alphabetical order)
+#FEATURES_PROVIDES += periph_adc
+
+# Various other features (if any)
+FEATURES_PROVIDED += cpp
+
+# The board MPU family (used for grouping by the CI system)
+FEATURES_MCU_GROUP = cortex_m3
+
+-include $(RIOTCPU)/lm3s6965/Makefile.features
