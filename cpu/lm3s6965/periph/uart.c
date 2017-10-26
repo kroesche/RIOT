@@ -28,7 +28,8 @@
 #include "periph/uart.h" // standard peripheral header
 #include "periph/gpio.h"
 
-#define uart_write_polling uart_write
+#define uart_write_int uart_write
+//#define uart_write_polling uart_write
 
 static UART0_Type * const uart_table[UART_NUMOF] =
 {
@@ -36,7 +37,7 @@ static UART0_Type * const uart_table[UART_NUMOF] =
 };
 static const uint32_t uart_int_table[UART_NUMOF] =
 {
-    INT_UART0, INT_UART1, INT_UART2
+    INT_UART0 - 16, INT_UART1 - 16, INT_UART2 - 16
 };
 // GPIO pin (port/pin) of first pin (rx) of rx/tx pair.
 // The other (tx) will be the same +1
@@ -120,13 +121,49 @@ int uart_init(uart_t uart, uint32_t baudrate, uart_rx_cb_t rx_cb, void *arg)
 
     // finally, enable interrupt on the NVIC and enable UART
     NVIC_ClearPendingIRQ(uart_int_table[uart]);
-//    NVIC_EnableIRQ(uart_int_table[uart]);
+    NVIC_EnableIRQ(uart_int_table[uart]);
     puart->CTL |= UART_CTL_UARTEN;
 
     return UART_OK;
 }
 
-// blocking
+// This function is used to force one byte to be copied to TX FIFO.
+// This is needed to get TX interrupts running.  If the TX FIFO is
+// empty, then there is nothing to trigger a TX interrupt that will allow
+// the ISR to start draining the ring buffer.  Therefore, when data is
+// first written to the ring buffer, it must also write a byte to the
+// TX FIFO to get the whole thing running.
+static void prime_uart(uart_t uart)
+{
+    // get UART instance
+    UART0_Type * const puart = uart_table[uart];
+    NVIC_DisableIRQ(uart_int_table[uart]);
+
+    ringbuffer_t *pring = &ringbuf[uart];
+
+    // if there is anything in the ring buffer, try to write a byte out
+    if (!ringbuffer_empty(pring))
+    {
+        while ((puart->FR & UART_FR_TXFF) == 0) // TX FIFO not full
+        {
+            int b = ringbuffer_get_one(pring);
+            if (b >= 0)
+            {
+                puart->DR = b;
+            }
+            else
+            {
+                break;
+            }
+        }
+    }
+
+    NVIC_EnableIRQ(uart_int_table[uart]);
+}
+
+// This is non-blocking as long as there is room in the ring buffer but
+// as soon as the ring buffer is full, then it is blocking until some of
+// the data drains out via ISR
 void uart_write_int(uart_t uart, const uint8_t *data, size_t len)
 {
     // validate UART device
@@ -137,6 +174,7 @@ void uart_write_int(uart_t uart, const uint8_t *data, size_t len)
 
     // get UART instance
     UART0_Type * const puart = uart_table[uart];
+    ringbuffer_t *pring = &ringbuf[uart];
 
     // stay in loop until all bytes are sent
     while (len--)
@@ -144,12 +182,14 @@ void uart_write_int(uart_t uart, const uint8_t *data, size_t len)
         // make sure tx interrupts can run
         puart->IM |= UART_IM_TXIM;
         // spin until there is space in the buffer
-        while (ringbuffer_full(&ringbuf[uart]))
-        {}
+        while (ringbuffer_full(pring))
+        {
+        }
         // TX interrupt critical section to protect ring buffer
         puart->IM &= ~UART_IM_TXIM;
-        ringbuffer_add_one(&ringbuf[uart], *data);
+        ringbuffer_add_one(pring, *data);
         puart->IM |= UART_IM_TXIM;
+        prime_uart(uart);
         ++data;
     }
 }
@@ -199,12 +239,14 @@ void isr_uart0(void)
     // process transmit interrupt
     if (intflags & UART_MIS_TXMIS)
     {
+        ringbuffer_t *pring = &ringbuf[0];
+
         // copy bytes to output FIFO while there is room
-        if (!ringbuffer_empty(&ringbuf[0]))
+        if (!ringbuffer_empty(pring))
         {
             while ((UART0->FR & UART_FR_TXFF) == 0)
             {
-                int b = ringbuffer_get_one(&ringbuf[0]);
+                int b = ringbuffer_get_one(pring);
                 if (b < 0)
                 {
                     // tx buffer is empty so turn off tx interrupt
