@@ -22,7 +22,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "cpu_conf.h"
+#include "cpu.h" // will include cpu_conf
+//#include "cpu_conf.h"
 //#include "periph/gpio.h"
 #ifdef __cplusplus
 extern "C" {

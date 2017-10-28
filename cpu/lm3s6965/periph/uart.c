@@ -21,7 +21,7 @@
 
 #include <stdint.h>
 
-#include "ringbuffer.h"
+#include "tsrb.h"
 #include "hw_uart.h"
 #include "hw_ints.h"
 #include "cpu.h"
@@ -49,11 +49,11 @@ static const uint32_t uart_pins[UART_NUMOF] =
 // TX buffers
 static char txbuf[UART_NUMOF][64];
 // ringbuffer structs
-static ringbuffer_t ringbuf[UART_NUMOF] =
+static tsrb_t ringbuf[UART_NUMOF] =
 {
-    RINGBUFFER_INIT(txbuf[0]),
-    RINGBUFFER_INIT(txbuf[1]),
-    RINGBUFFER_INIT(txbuf[2])
+    TSRB_INIT(txbuf[0]),
+    TSRB_INIT(txbuf[1]),
+    TSRB_INIT(txbuf[2])
 };
 
 static uart_isr_ctx_t ctx[UART_NUMOF] =
@@ -137,28 +137,26 @@ static void prime_uart(uart_t uart)
 {
     // get UART instance
     UART0_Type * const puart = uart_table[uart];
-    NVIC_DisableIRQ(uart_int_table[uart]);
-
-    ringbuffer_t *pring = &ringbuf[uart];
+    tsrb_t *pring = &ringbuf[uart];
 
     // if there is anything in the ring buffer, try to write a byte out
-    if (!ringbuffer_empty(pring))
+    while ((puart->FR & UART_FR_TXFF) == 0) // TX FIFO not full
     {
-        while ((puart->FR & UART_FR_TXFF) == 0) // TX FIFO not full
+        // note: tsrb is designed to be safe to access this way
+        // without needing to use a critical section to prevent
+        // conflict with isr
+        int b = tsrb_get_one(pring);
+        if (b >= 0)
         {
-            int b = ringbuffer_get_one(pring);
-            if (b >= 0)
-            {
-                puart->DR = b;
-            }
-            else
-            {
-                break;
-            }
+            puart->DR = b;
+        }
+        else
+        {
+            break;
         }
     }
-
-    NVIC_EnableIRQ(uart_int_table[uart]);
+    // make sure tx interrupts can run
+    puart->IM |= UART_IM_TXIM;
 }
 
 // This is non-blocking as long as there is room in the ring buffer but
@@ -172,23 +170,16 @@ void uart_write_int(uart_t uart, const uint8_t *data, size_t len)
         return;
     }
 
-    // get UART instance
-    UART0_Type * const puart = uart_table[uart];
-    ringbuffer_t *pring = &ringbuf[uart];
+    tsrb_t *pring = &ringbuf[uart];
 
     // stay in loop until all bytes are sent
     while (len--)
     {
-        // make sure tx interrupts can run
-        puart->IM |= UART_IM_TXIM;
         // spin until there is space in the buffer
-        while (ringbuffer_full(pring))
+        while (tsrb_full(pring))
         {
         }
-        // TX interrupt critical section to protect ring buffer
-        puart->IM &= ~UART_IM_TXIM;
-        ringbuffer_add_one(pring, *data);
-        puart->IM |= UART_IM_TXIM;
+        tsrb_add_one(pring, *data);
         prime_uart(uart);
         ++data;
     }
@@ -239,29 +230,22 @@ void isr_uart0(void)
     // process transmit interrupt
     if (intflags & UART_MIS_TXMIS)
     {
-        ringbuffer_t *pring = &ringbuf[0];
+        tsrb_t *pring = &ringbuf[0];
 
         // copy bytes to output FIFO while there is room
-        if (!ringbuffer_empty(pring))
+        while ((UART0->FR & UART_FR_TXFF) == 0)
         {
-            while ((UART0->FR & UART_FR_TXFF) == 0)
+            int b = tsrb_get_one(pring);
+            if (b < 0)
             {
-                int b = ringbuffer_get_one(pring);
-                if (b < 0)
-                {
-                    // tx buffer is empty so turn off tx interrupt
-                    UART0->IM &= ~UART_IM_TXIM;
-                    break;
-                }
-                else
-                {
-                    UART0->DR = b;
-                }
+                // tx buffer is empty so turn off tx interrupt
+                UART0->IM &= ~UART_IM_TXIM;
+                break;
             }
-        }
-        else    // nothing to send
-        {
-            UART0->IM &= ~UART_IM_TXIM;
+            else
+            {
+                UART0->DR = b;
+            }
         }
     }
     cortexm_isr_end();
